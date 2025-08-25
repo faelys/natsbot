@@ -18,7 +18,6 @@ package natsbot
 
 import (
 	"log"
-	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -30,22 +29,8 @@ type NatsBot interface {
 	Teardown(L *lua.LState)
 }
 
-type NatsReloadingBot interface {
-	Setup(L *lua.LState)
-	ReloadBegin(oldL, newL *lua.LState)
-	ReloadAbort(oldL, newL *lua.LState)
-	ReloadEnd(oldL, newL *lua.LState)
-	Teardown(L *lua.LState)
-}
-
-type internalMsg struct {
-	timestamp float64
-	connId    int
-	msg       nats.Msg
-}
-
 func Loop(cb NatsBot, mainScript string, capacity int) {
-	msgChan := make(chan internalMsg, capacity)
+	msgChan := make(chan *nats.Msg, capacity)
 
 	L := lua.NewState()
 	defer L.Close()
@@ -55,8 +40,7 @@ func Loop(cb NatsBot, mainScript string, capacity int) {
 
 	registerConnType(L)
 	registerTimerType(L)
-	registerState(L, cb, msgChan)
-	defer cleanupConns(L)
+	registerState(L, msgChan)
 
 	if err := L.DoFile(mainScript); err != nil {
 		panic(err)
@@ -76,18 +60,12 @@ func Loop(cb NatsBot, mainScript string, capacity int) {
 				break
 			}
 
-			processMsg(L, &msg)
+			processMsg(L, msg)
 
 		case <-timer.C:
 		}
 
 		runTimers(L, timer)
-
-		if stateReloadRequested(L) {
-			L = reload(L, mainScript)
-			runTimers(L, timer)
-			stateRequestReload(L, lua.LNil)
-		}
 
 		if tableIsEmpty(stateConnTable(L)) && tableIsEmpty(stateTimerTable(L)) {
 			break
@@ -97,105 +75,28 @@ func Loop(cb NatsBot, mainScript string, capacity int) {
 	log.Println("natsbot finished")
 }
 
-func processMsg(L *lua.LState, msg *internalMsg) {
+func processMsg(L *lua.LState, msg *nats.Msg) {
 	// TODO
-}
-
-func reload(oldL *lua.LState, mainScript string) *lua.LState {
-	log.Println("Reloading", mainScript)
-	cb := stateCB(oldL)
-	reloader, isReloader := cb.(NatsReloadingBot)
-
-	newL := lua.NewState()
-
-	if isReloader {
-		reloader.ReloadBegin(oldL, newL)
-	} else {
-		cb.Setup(newL)
-	}
-
-	registerConnType(newL)
-	registerTimerType(newL)
-
-	stateReloadBegin(oldL, newL)
-
-	if err := newL.DoFile(mainScript); err != nil {
-		log.Println("Reload failed:", err)
-		stateReloadAbort(oldL, newL)
-		if isReloader {
-			reloader.ReloadAbort(oldL, newL)
-		} else {
-			cb.Teardown(newL)
-		}
-		newL.Close()
-		return oldL
-	} else {
-		stateReloadEnd(oldL, newL)
-		if isReloader {
-			reloader.ReloadEnd(oldL, newL)
-		} else {
-			cb.Teardown(oldL)
-		}
-		oldL.Close()
-		log.Println("Reload successful")
-		return newL
-	}
 }
 
 /********** State Object in the Lua Interpreter **********/
 
 const luaStateName = "_natsbot"
-const keyMsgChan = 1
-const keyCB = 2
-const keyConnNextId = 3
-const keyCfgMap = 4
-const keyConnTable = 5
-const keyTimerTable = 6
-const keyReloadRequest = 7
-const keyOldCfgMap = 8
+const (
+	_ = iota
+	keyMsgChan
+	keyCfgMap
+	keyConnTable
+	keyTimerTable
+)
 
-func registerState(L *lua.LState, cb NatsBot, msgChan chan<- internalMsg) {
+func registerState(L *lua.LState, msgChan chan<- *nats.Msg) {
 	st := L.NewTable()
 	L.RawSetInt(st, keyMsgChan, newUserData(L, msgChan))
-	L.RawSetInt(st, keyCB, newUserData(L, cb))
-	L.RawSetInt(st, keyConnNextId, lua.LNumber(1))
 	L.RawSetInt(st, keyCfgMap, newUserData(L, make(natsConfigMap)))
 	L.RawSetInt(st, keyConnTable, L.NewTable())
 	L.RawSetInt(st, keyTimerTable, L.NewTable())
 	stateSet(L, st)
-	L.SetGlobal("reload", L.NewFunction(requestReload))
-}
-
-func stateReloadBegin(oldL, newL *lua.LState) {
-	oldSt := stateGet(oldL)
-	msgChan := oldL.RawGetInt(oldSt, keyMsgChan).(*lua.LUserData).Value.(chan<- internalMsg)
-	cb := oldL.RawGetInt(oldSt, keyCB).(*lua.LUserData).Value.(NatsBot)
-	nextId := oldL.RawGetInt(oldSt, keyConnNextId)
-	cfgMap := oldL.RawGetInt(oldSt, keyCfgMap).(*lua.LUserData).Value.(natsConfigMap)
-
-	st := newL.NewTable()
-	newL.RawSetInt(st, keyMsgChan, newUserData(newL, msgChan))
-	newL.RawSetInt(st, keyCB, newUserData(newL, cb))
-	newL.RawSetInt(st, keyConnNextId, nextId)
-	newL.RawSetInt(st, keyCfgMap, newUserData(newL, make(natsConfigMap)))
-	newL.RawSetInt(st, keyConnTable, newL.NewTable())
-	newL.RawSetInt(st, keyTimerTable, newL.NewTable())
-	newL.RawSetInt(st, keyOldCfgMap, newUserData(newL, cfgMap))
-	stateSet(newL, st)
-	newL.SetGlobal("reload", newL.NewFunction(requestReload))
-}
-
-func stateReloadAbort(oldL, newL *lua.LState) {
-	statePartialCleanup(newL, oldL)
-}
-
-func stateReloadEnd(oldL, newL *lua.LState) {
-	statePartialCleanup(oldL, newL)
-	newL.RawSetInt(stateGet(newL), keyOldCfgMap, lua.LNil)
-}
-
-func statePartialCleanup(staleL, keptL *lua.LState) {
-	// TODO
 }
 
 func stateUncheckedGet(L *lua.LState) *lua.LTable {
@@ -226,14 +127,9 @@ func stateValue(L *lua.LState, key int) lua.LValue {
 	return L.RawGetInt(stateGet(L), key)
 }
 
-func stateMsgChan(L *lua.LState) chan<- internalMsg {
+func stateMsgChan(L *lua.LState) chan<- *nats.Msg {
 	ud := stateValue(L, keyMsgChan)
-	return ud.(*lua.LUserData).Value.(chan<- internalMsg)
-}
-
-func stateCB(L *lua.LState) NatsBot {
-	ud := stateValue(L, keyCB)
-	return ud.(*lua.LUserData).Value.(NatsBot)
+	return ud.(*lua.LUserData).Value.(chan<- *nats.Msg)
 }
 
 func stateCfgMap(L *lua.LState) natsConfigMap {
@@ -246,28 +142,6 @@ func stateConnTable(L *lua.LState) *lua.LTable {
 
 func stateTimerTable(L *lua.LState) *lua.LTable {
 	return stateValue(L, keyTimerTable).(*lua.LTable)
-}
-
-func stateReloadRequested(L *lua.LState) bool {
-	return lua.LVAsBool(stateValue(L, keyReloadRequest))
-}
-
-func stateRequestReload(L *lua.LState, v lua.LValue) {
-	L.RawSetInt(stateGet(L), keyReloadRequest, v)
-}
-
-func stateOldCfgMap(L *lua.LState) natsConfigMap {
-	val := stateValue(L, keyOldCfgMap)
-	if val == lua.LNil {
-		return nil
-	} else {
-		return val.(*lua.LUserData).Value.(natsConfigMap)
-	}
-}
-
-func requestReload(L *lua.LState) int {
-	stateRequestReload(L, lua.LTrue)
-	return 0
 }
 
 /********** NATS Connection Configuration **********/
@@ -379,16 +253,6 @@ func runTimers(L *lua.LState, parentTimer *time.Timer) {
 }
 
 /********** Tools **********/
-
-const internalRoot = "$SYS.SELF."
-
-func isInternal(subject string) bool {
-	return strings.HasPrefix(subject, internalRoot)
-}
-
-func internalSubject(domain string) string {
-	return internalRoot + domain
-}
 
 func newUserData(L *lua.LState, v interface{}) *lua.LUserData {
 	res := L.NewUserData()
