@@ -17,6 +17,7 @@
 package natsbot
 
 import (
+	"errors"
 	"log"
 	"time"
 
@@ -91,10 +92,13 @@ const (
 )
 
 func registerState(L *lua.LState, msgChan chan<- *nats.Msg) {
+	conns := L.NewTable()
+	L.RawSetInt(conns, 1, newUserData(L, make(connMap)))
+
 	st := L.NewTable()
 	L.RawSetInt(st, keyMsgChan, newUserData(L, msgChan))
 	L.RawSetInt(st, keyCfgMap, newUserData(L, make(natsConfigMap)))
-	L.RawSetInt(st, keyConnTable, L.NewTable())
+	L.RawSetInt(st, keyConnTable, conns)
 	L.RawSetInt(st, keyTimerTable, L.NewTable())
 	stateSet(L, st)
 }
@@ -150,21 +154,113 @@ type natsConfig struct {
 	url string
 }
 
-type natsConn struct {
-	nc *nats.Conn
-	id int
+type natsConfigMap map[natsConfig]*nats.Conn
+
+func connConfig(L *lua.LState) (*natsConfig, error) {
+	return nil, errors.New("not implemented yet")
 }
 
-type natsConfigMap map[natsConfig]natsConn
+func newConn(cfg *natsConfig) (*nats.Conn, error) {
+	return nil, errors.New("not implemented yet")
+}
 
 /********** Lua Object for NATS connection **********/
 
+const luaNatsConnTypeName = "natsconn"
+const keyIndex = 1
+
+type connMap map[*nats.Conn]int
+
 func registerConnType(L *lua.LState) {
-	// TODO
+	index := L.NewTable()
+	L.SetField(index, "publish", L.NewFunction(natsPublish))
+
+	mt := L.NewTypeMetatable(luaNatsConnTypeName)
+	L.SetField(mt, "__index", index)
+
+	L.SetGlobal(luaNatsConnTypeName, L.NewFunction(natsConnect))
 }
 
-func cleanupConns(L *lua.LState) {
-	// TODO
+func natsConnect(L *lua.LState) int {
+	pcfg, err := connConfig(L)
+	if err != nil {
+		log.Println(err)
+		L.Push(lua.LNil)
+		L.Push(lua.LString(err.Error()))
+		return 2
+	}
+	cfg := *pcfg
+
+	cfgMap := stateCfgMap(L)
+	if nc, found := cfgMap[cfg]; found {
+		tbl := stateConnTable(L)
+		if id, ok := L.RawGetInt(tbl, keyIndex).(*lua.LUserData).Value.(connMap)[nc]; ok {
+			res := L.RawGetInt(tbl, id)
+			if lua.LVIsFalse(res) {
+				panic("Inconsistent connection table")
+			}
+			L.Push(res)
+			return 1
+		} else {
+			panic("Inconsistent connection table")
+		}
+	}
+
+	nc, err := newConn(pcfg)
+	if err != nil {
+		log.Println("newConn", err)
+		L.Push(lua.LNil)
+		L.Push(lua.LString(err.Error()))
+		return 2
+	}
+
+	cfgMap[cfg] = nc
+	L.Push(wrapConn(L, nc))
+	return 1
+}
+
+func wrapConn(L *lua.LState, nc *nats.Conn) lua.LValue {
+	luaConn := newUserData(L, nc)
+	L.SetMetatable(luaConn, L.GetTypeMetatable(luaNatsConnTypeName))
+
+	tbl := stateConnTable(L)
+	id := tbl.Len() + 1
+	L.RawSetInt(tbl, id, luaConn)
+
+	m := L.RawGetInt(tbl, keyIndex).(*lua.LUserData).Value.(connMap)
+	if _, found := m[nc]; found {
+		panic("id already in connection table")
+	}
+	m[nc] = id
+
+	return luaConn
+}
+
+func checkConn(L *lua.LState, index int) *nats.Conn {
+	ud := L.CheckUserData(index)
+
+	if v, ok := ud.Value.(*nats.Conn); ok {
+		return v
+	}
+
+	L.ArgError(index, "connection expected")
+	return nil
+}
+
+func natsPublish(L *lua.LState) int {
+	nc := checkConn(L, 1)
+	subject := L.CheckString(2)
+	data := L.OptString(3, "")
+
+	if err := nc.Publish(subject, []byte(data)); err != nil {
+		log.Println("Publish:", err)
+		L.Push(lua.LNil)
+		L.Push(lua.LString(err.Error()))
+		return 2
+	} else {
+		L.Push(lua.LTrue)
+		return 1
+	}
 }
 
 /********** Lua Object for timers **********/
