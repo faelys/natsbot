@@ -18,7 +18,9 @@ package natsbot
 
 import (
 	"errors"
+	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -151,17 +153,126 @@ func stateTimerTable(L *lua.LState) *lua.LTable {
 /********** NATS Connection Configuration **********/
 
 type natsConfig struct {
-	url string
+	url      string
+	name     string
+	nkey     string
+	user     string
+	password string
+	token    string
 }
 
 type natsConfigMap map[natsConfig]*nats.Conn
 
 func connConfig(L *lua.LState) (*natsConfig, error) {
-	return nil, errors.New("not implemented yet")
+	arg := L.Get(1)
+	if url, ok := arg.(lua.LString); ok {
+		if cfg, err := toConfig(L, L.Get(2)); err != nil {
+			return nil, err
+		} else if cfg.url == "" {
+			cfg.url = string(url)
+			return cfg, nil
+		} else if cfg.url != string(url) {
+			return nil, fmt.Errorf("incompatible URLs %q and %q", cfg.url, string(url))
+		} else {
+			return cfg, nil
+		}
+	} else {
+		return toConfig(L, arg)
+	}
+}
+
+func toConfig(L *lua.LState, lv lua.LValue) (*natsConfig, error) {
+	tbl, ok := lv.(*lua.LTable)
+	if !ok {
+		return nil, errors.New("configuration is not a table")
+	}
+
+	var result natsConfig
+	var errStr []string
+
+	L.ForEach(tbl, func(key, value lua.LValue) {
+		skey, ok := key.(lua.LString)
+		if !ok {
+			errStr = append(errStr, fmt.Sprintf("bad key: %q", lua.LVAsString(key)))
+			return
+		}
+
+		switch skey {
+		case "url":
+			if s, ok := value.(lua.LString); ok {
+				result.url = string(s)
+			} else {
+				errStr = append(errStr, fmt.Sprintf("bad value for key %q: %q", skey, lua.LVAsString(value)))
+			}
+
+		case "name":
+			if s, ok := value.(lua.LString); ok {
+				result.name = string(s)
+			} else {
+				errStr = append(errStr, fmt.Sprintf("bad value for key %q: %q", skey, lua.LVAsString(value)))
+			}
+
+		case "nkey":
+			if s, ok := value.(lua.LString); ok {
+				result.nkey = string(s)
+			} else {
+				errStr = append(errStr, fmt.Sprintf("bad value for key %q: %q", skey, lua.LVAsString(value)))
+			}
+
+		case "user":
+			if s, ok := value.(lua.LString); ok {
+				result.user = string(s)
+			} else {
+				errStr = append(errStr, fmt.Sprintf("bad value for key %q: %q", skey, lua.LVAsString(value)))
+			}
+
+		case "password":
+			if s, ok := value.(lua.LString); ok {
+				result.password = string(s)
+			} else {
+				errStr = append(errStr, fmt.Sprintf("bad value for key %q: %q", skey, lua.LVAsString(value)))
+			}
+
+		case "token":
+			if s, ok := value.(lua.LString); ok {
+				result.token = string(s)
+			} else {
+				errStr = append(errStr, fmt.Sprintf("bad value for key %q: %q", skey, lua.LVAsString(value)))
+			}
+
+		default:
+			errStr = append(errStr, fmt.Sprintf("Unknown key %q", skey))
+		}
+	})
+
+	if len(errStr) > 0 {
+		return nil, errors.New(strings.Join(errStr, ", "))
+	} else {
+		return &result, nil
+	}
 }
 
 func newConn(cfg *natsConfig) (*nats.Conn, error) {
-	return nil, errors.New("not implemented yet")
+	opt := []nats.Option{}
+
+	if cfg.name != "" {
+		opt = append(opt, nats.Name(cfg.name))
+	}
+	if cfg.nkey != "" {
+		if o, err := nats.NkeyOptionFromSeed(cfg.nkey); err != nil {
+			return nil, err
+		} else {
+			opt = append(opt, o)
+		}
+	}
+	if cfg.user != "" || cfg.password != "" {
+		opt = append(opt, nats.UserInfo(cfg.user, cfg.password))
+	}
+	if cfg.token != "" {
+		opt = append(opt, nats.Token(cfg.token))
+	}
+
+	return nats.Connect(cfg.url, opt...)
 }
 
 /********** Lua Object for NATS connection **********/
