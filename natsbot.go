@@ -79,7 +79,18 @@ func Loop(cb NatsBot, mainScript string, capacity int) {
 }
 
 func processMsg(L *lua.LState, msg *nats.Msg) {
-	// TODO
+	tbl := stateSubsTable(L)
+	id := L.RawGetInt(tbl, 1).(*lua.LUserData).Value.(subsMap)[msg.Sub]
+	log.Printf("Received message on %q, for sub %q, at id %d", msg.Subject, msg.Sub.Subject, id)
+	subs := L.RawGetInt(tbl, id)
+	fn := L.GetField(L.GetMetatable(subs), "__call")
+	err := L.CallByParam(lua.P{Fn: fn, NRet: 0, Protect: true},
+		subs,
+		lua.LString(msg.Subject),
+		lua.LString(string(msg.Data)))
+	if err != nil {
+		panic(err)
+	}
 }
 
 /********** State Object in the Lua Interpreter **********/
