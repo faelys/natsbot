@@ -87,7 +87,8 @@ func processMsg(L *lua.LState, msg *nats.Msg) {
 	err := L.CallByParam(lua.P{Fn: fn, NRet: 0, Protect: true},
 		subs,
 		lua.LString(msg.Subject),
-		lua.LString(string(msg.Data)))
+		lua.LString(string(msg.Data)),
+		luaHeaders(L, msg.Reply, msg.Header))
 	if err != nil {
 		panic(err)
 	}
@@ -564,6 +565,35 @@ func runTimers(L *lua.LState, parentTimer *time.Timer) {
 }
 
 /********** Tools **********/
+
+func luaHeader(L *lua.LState, header []string) lua.LValue {
+	switch len(header) {
+	case 0:
+		return lua.LNil
+	case 1:
+		return lua.LString(header[0])
+	default:
+		result := L.CreateTable(len(header), 0)
+		for i, v := range header {
+			L.RawSetInt(result, i+1, lua.LString(v))
+		}
+		return result
+	}
+}
+
+func luaHeaders(L *lua.LState, reply string, headers map[string][]string) lua.LValue {
+	result := L.NewTable()
+
+	if reply != "" {
+		L.RawSetInt(result, 1, lua.LString(reply))
+	}
+
+	for key, values := range headers {
+		L.SetField(result, key, luaHeader(L, values))
+	}
+
+	return result
+}
 
 func newUserData(L *lua.LState, v interface{}) *lua.LUserData {
 	res := L.NewUserData()
