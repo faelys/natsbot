@@ -441,6 +441,7 @@ func wrapSubs(L *lua.LState, fn lua.LValue, ns *nats.Subscription, nc *nats.Conn
 
 	L.SetField(index, "publish", L.NewFunction(natsPublish))
 	L.SetField(index, "subscribe", L.NewFunction(natsSubscribe))
+	L.SetField(index, "unsubscribe", L.NewFunction(natsUnsubscribe))
 
 	mt := L.NewTable()
 	L.SetField(mt, "__call", fn)
@@ -477,6 +478,21 @@ func checkSubs(L *lua.LState, index int) *natsSubs {
 
 	L.ArgError(index, "subscription expected")
 	return nil
+}
+
+func natsUnsubscribe(L *lua.LState) int {
+	s := checkSubs(L, 1)
+	count := L.OptInt(2, 0)
+
+	if err := s.subs.AutoUnsubscribe(count); err != nil {
+		log.Println("Unsubscribe:", err)
+		L.Push(lua.LNil)
+		L.Push(lua.LString(err.Error()))
+		return 2
+	} else {
+		L.Push(lua.LTrue)
+		return 1
+	}
 }
 
 /********** Lua Object for timers **********/
