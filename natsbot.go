@@ -70,7 +70,7 @@ func Loop(cb NatsBot, mainScript string, capacity int) {
 
 		runTimers(L, timer)
 
-		if tableIsEmpty(stateConnTable(L)) && tableIsEmpty(stateTimerTable(L)) {
+		if tableWithIndexIsEmpty(stateConnTable(L)) && tableIsEmpty(stateTimerTable(L)) {
 			break
 		}
 	}
@@ -619,5 +619,15 @@ func newUserData(L *lua.LState, v interface{}) *lua.LUserData {
 
 func tableIsEmpty(t *lua.LTable) bool {
 	key, _ := t.Next(lua.LNil)
+	return key == lua.LNil
+}
+
+func tableWithIndexIsEmpty(t *lua.LTable) bool {
+	key, _ := t.Next(lua.LNil)
+
+	if n, ok := key.(lua.LNumber); ok && n == lua.LNumber(keyIndex) {
+		key, _ = t.Next(key)
+	}
+
 	return key == lua.LNil
 }
