@@ -79,10 +79,8 @@ func Loop(cb NatsBot, mainScript string, capacity int) {
 }
 
 func processMsg(L *lua.LState, msg *nats.Msg) {
-	tbl := stateSubsTable(L)
-	id := L.RawGetInt(tbl, 1).(*lua.LUserData).Value.(subsMap)[msg.Sub]
-	log.Printf("Received message on %q, for sub %q, at id %d", msg.Subject, msg.Sub.Subject, id)
-	subs := L.RawGetInt(tbl, id)
+	tbl, idx := stateSubsTable(L)
+	subs := L.RawGetInt(tbl, idx[msg.Sub])
 	fn := L.GetField(L.GetMetatable(subs), "__call")
 	err := L.CallByParam(lua.P{Fn: fn, NRet: 0, Protect: true},
 		subs,
@@ -161,12 +159,16 @@ func stateCfgMap(L *lua.LState) natsConfigMap {
 	return stateValue(L, keyCfgMap).(*lua.LUserData).Value.(natsConfigMap)
 }
 
-func stateConnTable(L *lua.LState) *lua.LTable {
-	return stateValue(L, keyConnTable).(*lua.LTable)
+func stateConnTable(L *lua.LState) (*lua.LTable, connMap) {
+	tbl := stateValue(L, keyConnTable).(*lua.LTable)
+	idx := L.RawGetInt(tbl, keyIndex).(*lua.LUserData).Value.(connMap)
+	return tbl, idx
 }
 
-func stateSubsTable(L *lua.LState) *lua.LTable {
-	return stateValue(L, keySubsTable).(*lua.LTable)
+func stateSubsTable(L *lua.LState) (*lua.LTable, subsMap) {
+	tbl := stateValue(L, keySubsTable).(*lua.LTable)
+	idx := L.RawGetInt(tbl, keyIndex).(*lua.LUserData).Value.(subsMap)
+	return tbl, idx
 }
 
 func stateTimerTable(L *lua.LState) *lua.LTable {
@@ -328,8 +330,8 @@ func natsConnect(L *lua.LState) int {
 
 	cfgMap := stateCfgMap(L)
 	if nc, found := cfgMap[cfg]; found {
-		tbl := stateConnTable(L)
-		if id, ok := L.RawGetInt(tbl, keyIndex).(*lua.LUserData).Value.(connMap)[nc]; ok {
+		tbl, idx := stateConnTable(L)
+		if id, ok := idx[nc]; ok {
 			res := L.RawGetInt(tbl, id)
 			if lua.LVIsFalse(res) {
 				panic("Inconsistent connection table")
@@ -358,15 +360,14 @@ func wrapConn(L *lua.LState, nc *nats.Conn) lua.LValue {
 	luaConn := newUserData(L, nc)
 	L.SetMetatable(luaConn, L.GetTypeMetatable(luaNatsConnTypeName))
 
-	tbl := stateConnTable(L)
+	tbl, idx := stateConnTable(L)
 	id := tbl.Len() + 1
 	L.RawSetInt(tbl, id, luaConn)
 
-	m := L.RawGetInt(tbl, keyIndex).(*lua.LUserData).Value.(connMap)
-	if _, found := m[nc]; found {
+	if _, found := idx[nc]; found {
 		panic("id already in connection table")
 	}
-	m[nc] = id
+	idx[nc] = id
 
 	return luaConn
 }
@@ -427,11 +428,11 @@ type natsSubs struct {
 }
 
 func wrapSubs(L *lua.LState, fn lua.LValue, ns *nats.Subscription, nc *nats.Conn) lua.LValue {
-	tbl := stateSubsTable(L)
+	tbl, subsIdx := stateSubsTable(L)
 	id := tbl.Len() + 1
 	luaSub := newUserData(L, &natsSubs{id: id, nc: nc, subs: ns})
 
-	L.RawGetInt(tbl, keyIndex).(*lua.LUserData).Value.(subsMap)[ns] = id
+	subsIdx[ns] = id
 	L.RawSetInt(tbl, id, luaSub)
 
 	index := L.NewTable()
@@ -622,7 +623,7 @@ func tableIsEmpty(t *lua.LTable) bool {
 	return key == lua.LNil
 }
 
-func tableWithIndexIsEmpty(t *lua.LTable) bool {
+func tableWithIndexIsEmpty(t *lua.LTable, idx interface{}) bool {
 	key, _ := t.Next(lua.LNil)
 
 	if n, ok := key.(lua.LNumber); ok && n == lua.LNumber(keyIndex) {
