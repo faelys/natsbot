@@ -34,6 +34,7 @@ type NatsBot interface {
 
 func Loop(cb NatsBot, mainScript string, capacity int) {
 	msgChan := make(chan *nats.Msg, capacity)
+	toClean := make(map[*nats.Subscription]bool)
 
 	L := lua.NewState()
 	defer L.Close()
@@ -65,10 +66,28 @@ func Loop(cb NatsBot, mainScript string, capacity int) {
 
 			processMsg(L, msg)
 
+			if !msg.Sub.IsValid() {
+				toClean[msg.Sub] = true
+			}
+
 		case <-timer.C:
 		}
 
 		runTimers(L, timer)
+
+		if len(msgChan) == 0 {
+			for s := range toClean {
+				if !s.IsValid() {
+					log.Printf("Pruning subscription %q", s.Subject)
+					tbl, idx := stateSubsTable(L)
+					L.RawSetInt(tbl, idx[s], lua.LNil)
+					delete(idx, s)
+				} else {
+					log.Printf("Subscription %q is still valid", s.Subject)
+				}
+			}
+			toClean = make(map[*nats.Subscription]bool)
+		}
 
 		if tableWithIndexIsEmpty(stateConnTable(L)) && tableIsEmpty(stateTimerTable(L)) {
 			break
