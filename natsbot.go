@@ -89,7 +89,7 @@ func Loop(cb NatsBot, mainScript string, capacity int) {
 			toClean = make(map[*nats.Subscription]bool)
 		}
 
-		if tableWithIndexIsEmpty(stateConnTable(L)) && tableIsEmpty(stateTimerTable(L)) {
+		if tableWithIndexIsEmpty(stateSubsTable(L)) && tableIsEmpty(stateTimerTable(L)) {
 			break
 		}
 	}
