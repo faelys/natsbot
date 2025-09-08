@@ -207,31 +207,34 @@ type natsConfig struct {
 
 type natsConfigMap map[natsConfig]*nats.Conn
 
-func connConfig(L *lua.LState) (*natsConfig, error) {
+type natsCbMap map[string]*lua.LFunction
+
+func connConfig(L *lua.LState) (*natsConfig, natsCbMap, error) {
 	arg := L.Get(1)
 	if url, ok := arg.(lua.LString); ok {
-		if cfg, err := toConfig(L, L.Get(2)); err != nil {
-			return nil, err
+		if cfg, cbmap, err := toConfig(L, L.Get(2)); err != nil {
+			return nil, nil, err
 		} else if cfg.url == "" {
 			cfg.url = string(url)
-			return cfg, nil
+			return cfg, cbmap, nil
 		} else if cfg.url != string(url) {
-			return nil, fmt.Errorf("incompatible URLs %q and %q", cfg.url, string(url))
+			return nil, nil, fmt.Errorf("incompatible URLs %q and %q", cfg.url, string(url))
 		} else {
-			return cfg, nil
+			return cfg, cbmap, nil
 		}
 	} else {
 		return toConfig(L, arg)
 	}
 }
 
-func toConfig(L *lua.LState, lv lua.LValue) (*natsConfig, error) {
+func toConfig(L *lua.LState, lv lua.LValue) (*natsConfig, natsCbMap, error) {
 	tbl, ok := lv.(*lua.LTable)
 	if !ok {
-		return nil, errors.New("configuration is not a table")
+		return nil, nil, errors.New("configuration is not a table")
 	}
 
 	var result natsConfig
+	cbmap := make(natsCbMap)
 	var errStr []string
 
 	L.ForEach(tbl, func(key, value lua.LValue) {
@@ -242,6 +245,21 @@ func toConfig(L *lua.LState, lv lua.LValue) (*natsConfig, error) {
 		}
 
 		switch skey {
+		case "closed":
+			fallthrough
+		case "disconnected":
+			fallthrough
+		case "error":
+			fallthrough
+		case "reconnect_error":
+			fallthrough
+		case "reconnected":
+			if s, ok := value.(*lua.LFunction); ok {
+				cbmap[string(skey)] = s
+			} else {
+				errStr = append(errStr, fmt.Sprintf("bad value for key %q: %q", skey, lua.LVAsString(value)))
+			}
+
 		case "url":
 			if s, ok := value.(lua.LString); ok {
 				result.url = string(s)
@@ -290,9 +308,9 @@ func toConfig(L *lua.LState, lv lua.LValue) (*natsConfig, error) {
 	})
 
 	if len(errStr) > 0 {
-		return nil, errors.New(strings.Join(errStr, ", "))
+		return nil, nil, errors.New(strings.Join(errStr, ", "))
 	} else {
-		return &result, nil
+		return &result, cbmap, nil
 	}
 }
 
@@ -327,18 +345,11 @@ const keyIndex = 1
 type connMap map[*nats.Conn]int
 
 func registerConnType(L *lua.LState) {
-	index := L.NewTable()
-	L.SetField(index, "publish", L.NewFunction(natsPublish))
-	L.SetField(index, "subscribe", L.NewFunction(natsSubscribe))
-
-	mt := L.NewTypeMetatable(luaNatsConnTypeName)
-	L.SetField(mt, "__index", index)
-
 	L.SetGlobal(luaNatsConnTypeName, L.NewFunction(natsConnect))
 }
 
 func natsConnect(L *lua.LState) int {
-	pcfg, err := connConfig(L)
+	pcfg, cbmap, err := connConfig(L)
 	if err != nil {
 		log.Println(err)
 		L.Push(lua.LNil)
@@ -371,13 +382,24 @@ func natsConnect(L *lua.LState) int {
 	}
 
 	cfgMap[cfg] = nc
-	L.Push(wrapConn(L, nc))
+	L.Push(wrapConn(L, nc, cbmap))
 	return 1
 }
 
-func wrapConn(L *lua.LState, nc *nats.Conn) lua.LValue {
+func wrapConn(L *lua.LState, nc *nats.Conn, cbmap natsCbMap) lua.LValue {
 	luaConn := newUserData(L, nc)
-	L.SetMetatable(luaConn, L.GetTypeMetatable(luaNatsConnTypeName))
+
+	index := L.NewTable()
+	L.SetField(index, "publish", L.NewFunction(natsPublish))
+	L.SetField(index, "subscribe", L.NewFunction(natsSubscribe))
+
+	for key, fn := range cbmap {
+		L.SetField(index, key, fn)
+	}
+
+	mt := L.NewTable()
+	L.SetField(mt, "__index", index)
+	L.SetMetatable(luaConn, mt)
 
 	tbl, idx := stateConnTable(L)
 	id := tbl.Len() + 1
