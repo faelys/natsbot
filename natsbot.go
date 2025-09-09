@@ -32,7 +32,15 @@ type NatsBot interface {
 	Teardown(L *lua.LState)
 }
 
+type internalEvent struct {
+	name string
+	nc   *nats.Conn
+	subs *nats.Subscription
+	err  error
+}
+
 func Loop(cb NatsBot, mainScript string, capacity int) {
+	evtChan := make(chan *internalEvent, capacity)
 	msgChan := make(chan *nats.Msg, capacity)
 	toClean := make(map[*nats.Subscription]bool)
 
@@ -44,7 +52,7 @@ func Loop(cb NatsBot, mainScript string, capacity int) {
 
 	registerConnType(L)
 	registerTimerType(L)
-	registerState(L, msgChan)
+	registerState(L, evtChan, msgChan)
 
 	if err := L.DoFile(mainScript); err != nil {
 		panic(err)
@@ -57,6 +65,14 @@ func Loop(cb NatsBot, mainScript string, capacity int) {
 
 	for {
 		select {
+		case evt, ok := <-evtChan:
+			if !ok {
+				log.Println("evtChan is closed")
+				break
+			}
+
+			processEvt(L, evt)
+
 		case msg, ok := <-msgChan:
 
 			if !ok {
@@ -97,6 +113,10 @@ func Loop(cb NatsBot, mainScript string, capacity int) {
 	log.Println("natsbot finished")
 }
 
+func processEvt(L *lua.LState, evt *internalEvent) {
+	// TODO
+}
+
 func processMsg(L *lua.LState, msg *nats.Msg) {
 	tbl, idx := stateSubsTable(L)
 	subs := L.RawGetInt(tbl, idx[msg.Sub])
@@ -116,6 +136,7 @@ func processMsg(L *lua.LState, msg *nats.Msg) {
 const luaStateName = "_natsbot"
 const (
 	_ = iota
+	keyEvtChan
 	keyMsgChan
 	keyCfgMap
 	keyConnTable
@@ -125,7 +146,7 @@ const (
 
 type subsMap map[*nats.Subscription]int
 
-func registerState(L *lua.LState, msgChan chan *nats.Msg) {
+func registerState(L *lua.LState, evtChan chan *internalEvent, msgChan chan *nats.Msg) {
 	conns := L.NewTable()
 	L.RawSetInt(conns, 1, newUserData(L, make(connMap)))
 
@@ -133,6 +154,7 @@ func registerState(L *lua.LState, msgChan chan *nats.Msg) {
 	L.RawSetInt(subs, 1, newUserData(L, make(subsMap)))
 
 	st := L.NewTable()
+	L.RawSetInt(st, keyEvtChan, newUserData(L, evtChan))
 	L.RawSetInt(st, keyMsgChan, newUserData(L, msgChan))
 	L.RawSetInt(st, keyCfgMap, newUserData(L, make(natsConfigMap)))
 	L.RawSetInt(st, keyConnTable, conns)
@@ -167,6 +189,11 @@ func stateSet(L *lua.LState, newState *lua.LTable) {
 
 func stateValue(L *lua.LState, key int) lua.LValue {
 	return L.RawGetInt(stateGet(L), key)
+}
+
+func stateEvtChan(L *lua.LState) chan *internalEvent {
+	ud := stateValue(L, keyEvtChan)
+	return ud.(*lua.LUserData).Value.(chan *internalEvent)
 }
 
 func stateMsgChan(L *lua.LState) chan *nats.Msg {
