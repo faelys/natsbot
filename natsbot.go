@@ -341,8 +341,14 @@ func toConfig(L *lua.LState, lv lua.LValue) (*natsConfig, natsCbMap, error) {
 	}
 }
 
-func newConn(cfg *natsConfig) (*nats.Conn, error) {
-	opt := []nats.Option{}
+func newConn(evtChan chan *internalEvent, cfg *natsConfig) (*nats.Conn, error) {
+	opt := []nats.Option{
+		nats.DisconnectErrHandler(newConnErrHandler(evtChan, "disconnected")),
+		nats.ReconnectHandler(newConnHandler(evtChan, "reconnected")),
+		nats.ReconnectErrHandler(newConnErrHandler(evtChan, "reconnect_error")),
+		nats.ClosedHandler(newConnHandler(evtChan, "closed")),
+		nats.ErrorHandler(newErrHandler(evtChan, "error")),
+	}
 
 	if cfg.name != "" {
 		opt = append(opt, nats.Name(cfg.name))
@@ -400,7 +406,7 @@ func natsConnect(L *lua.LState) int {
 		}
 	}
 
-	nc, err := newConn(pcfg)
+	nc, err := newConn(stateEvtChan(L), pcfg)
 	if err != nil {
 		log.Println("newConn", err)
 		L.Push(lua.LNil)
@@ -438,6 +444,24 @@ func wrapConn(L *lua.LState, nc *nats.Conn, cbmap natsCbMap) lua.LValue {
 	idx[nc] = id
 
 	return luaConn
+}
+
+func newConnHandler(evtChan chan *internalEvent, name string) nats.ConnHandler {
+	return func(nc *nats.Conn) {
+		evtChan <- &internalEvent{name: name, nc: nc}
+	}
+}
+
+func newConnErrHandler(evtChan chan *internalEvent, name string) nats.ConnErrHandler {
+	return func(nc *nats.Conn, err error) {
+		evtChan <- &internalEvent{name: name, nc: nc, err: err}
+	}
+}
+
+func newErrHandler(evtChan chan *internalEvent, name string) nats.ErrHandler {
+	return func(nc *nats.Conn, s *nats.Subscription, err error) {
+		evtChan <- &internalEvent{name: name, nc: nc, subs: s, err: err}
+	}
 }
 
 func checkConn(L *lua.LState, index int) *nats.Conn {
