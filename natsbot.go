@@ -114,7 +114,35 @@ func Loop(cb NatsBot, mainScript string, capacity int) {
 }
 
 func processEvt(L *lua.LState, evt *internalEvent) {
-	// TODO
+	tbl, idx := stateConnTable(L)
+	connLua := L.RawGetInt(tbl, idx[evt.nc])
+	fn := L.GetField(L.GetField(L.GetMetatable(connLua), "__index").(*lua.LTable), evt.name)
+	if lua.LVIsFalse(fn) {
+		return
+	}
+
+	var subLua lua.LValue
+	if evt.subs == nil {
+		subLua = lua.LNil
+	} else {
+		tbl, idx := stateSubsTable(L)
+		subLua = L.RawGetInt(tbl, idx[evt.subs])
+	}
+
+	var errLua lua.LValue
+	if evt.err == nil {
+		errLua = lua.LNil
+	} else {
+		errLua = lua.LString(evt.err.Error())
+	}
+
+	err := L.CallByParam(lua.P{Fn: fn, NRet: 0, Protect: true},
+		connLua,
+		subLua,
+		errLua)
+	if err != nil {
+		panic(err)
+	}
 }
 
 func processMsg(L *lua.LState, msg *nats.Msg) {
