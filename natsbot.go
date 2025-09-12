@@ -460,6 +460,7 @@ func wrapConn(L *lua.LState, nc *nats.Conn, cbmap natsCbMap) lua.LValue {
 
 	mt := L.NewTable()
 	L.SetField(mt, "__index", index)
+	L.SetField(mt, "__newindex", L.NewFunction(connNewIndex))
 	L.SetMetatable(luaConn, mt)
 
 	tbl, idx := stateConnTable(L)
@@ -472,6 +473,34 @@ func wrapConn(L *lua.LState, nc *nats.Conn, cbmap natsCbMap) lua.LValue {
 	idx[nc] = id
 
 	return luaConn
+}
+
+func connNewIndex(L *lua.LState) int {
+	ud := L.CheckUserData(1)
+
+	if _, ok := ud.Value.(*nats.Conn); !ok {
+		L.ArgError(1, "connection expected")
+		return 0
+	}
+
+	event := L.CheckString(2)
+	if event != "disconnected" &&
+		event != "reconnected" &&
+		event != "reconnect_error" &&
+		event != "closed" &&
+		event != "error" {
+		L.ArgError(2, "unsupported callback name")
+	}
+
+	fn := L.Get(3)
+	if _, ok := fn.(*lua.LFunction); ok && fn != lua.LNil {
+		L.ArgError(3, "function expected")
+	}
+
+	mt := L.GetMetatable(ud)
+	idx := L.GetField(mt, "__index").(*lua.LTable)
+	L.SetField(idx, event, fn)
+	return 0
 }
 
 func newConnHandler(evtChan chan *internalEvent, name string) nats.ConnHandler {
