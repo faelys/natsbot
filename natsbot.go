@@ -117,7 +117,20 @@ func processEvt(L *lua.LState, evt *internalEvent) {
 	tbl, idx := stateConnTable(L)
 	connLua := L.RawGetInt(tbl, idx[evt.nc])
 	fn := L.GetField(L.GetField(L.GetMetatable(connLua), "__index").(*lua.LTable), evt.name)
+
 	if lua.LVIsFalse(fn) {
+		connS := strings.Join(evt.nc.Servers(), "|")
+		subsS := ""
+		errS := ""
+
+		if evt.subs != nil {
+			subsS = fmt.Sprintf(" on %q", evt.subs.Subject)
+		}
+		if evt.err != nil {
+			errS = ": " + evt.err.Error()
+		}
+
+		log.Printf("Event %s on %s%s%s", evt.name, connS, subsS, errS)
 		return
 	}
 
