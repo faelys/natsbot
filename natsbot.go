@@ -160,7 +160,13 @@ func processEvt(L *lua.LState, evt *internalEvent) {
 
 func processMsg(L *lua.LState, msg *nats.Msg) {
 	tbl, idx := stateSubsTable(L)
-	subs := L.RawGetInt(tbl, idx[msg.Sub])
+	id, found := idx[msg.Sub]
+	if !found {
+		log.Printf("Got message for stale subscription to %q", msg.Sub.Subject)
+		return
+	}
+
+	subs := L.RawGetInt(tbl, id)
 	fn := L.GetField(L.GetMetatable(subs), "__call")
 	err := L.CallByParam(lua.P{Fn: fn, NRet: 0, Protect: true},
 		subs,
