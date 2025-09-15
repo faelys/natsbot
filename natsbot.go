@@ -191,21 +191,13 @@ const (
 	keyTimerTable
 )
 
-type subsMap map[*nats.Subscription]int
-
 func registerState(L *lua.LState, evtChan chan *internalEvent, msgChan chan *nats.Msg) {
-	conns := L.NewTable()
-	L.RawSetInt(conns, 1, newUserData(L, make(connMap)))
-
-	subs := L.NewTable()
-	L.RawSetInt(subs, 1, newUserData(L, make(subsMap)))
-
 	st := L.NewTable()
 	L.RawSetInt(st, keyEvtChan, newUserData(L, evtChan))
 	L.RawSetInt(st, keyMsgChan, newUserData(L, msgChan))
 	L.RawSetInt(st, keyCfgMap, newUserData(L, make(natsConfigMap)))
-	L.RawSetInt(st, keyConnTable, conns)
-	L.RawSetInt(st, keySubsTable, subs)
+	L.RawSetInt(st, keyConnTable, newConnTbl(L))
+	L.RawSetInt(st, keySubsTable, newSubsTbl(L))
 	L.RawSetInt(st, keyTimerTable, L.NewTable())
 	stateSet(L, st)
 }
@@ -428,6 +420,12 @@ func registerConnType(L *lua.LState) {
 	L.SetGlobal(luaNatsConnTypeName, L.NewFunction(natsConnect))
 }
 
+func newConnTbl(L *lua.LState) lua.LValue {
+	connTbl := L.NewTable()
+	L.RawSetInt(connTbl, keyIndex, newUserData(L, make(connMap)))
+	return connTbl
+}
+
 func natsConnect(L *lua.LState) int {
 	pcfg, cbmap, err := connConfig(L)
 	if err != nil {
@@ -593,6 +591,14 @@ type natsSubs struct {
 	id   int
 	nc   *nats.Conn
 	subs *nats.Subscription
+}
+
+type subsMap map[*nats.Subscription]int
+
+func newSubsTbl(L *lua.LState) lua.LValue {
+	subsTbl := L.NewTable()
+	L.RawSetInt(subsTbl, keyIndex, newUserData(L, make(subsMap)))
+	return subsTbl
 }
 
 func wrapSubs(L *lua.LState, fn lua.LValue, ns *nats.Subscription, nc *nats.Conn) lua.LValue {
