@@ -110,6 +110,7 @@ func Loop(cb NatsBot, mainScript string, capacity int) {
 		}
 	}
 
+	stateClean(L)
 	log.Println("natsbot finished")
 }
 
@@ -200,6 +201,23 @@ func registerState(L *lua.LState, evtChan chan *internalEvent, msgChan chan *nat
 	L.RawSetInt(st, keySubsTable, newSubsTbl(L))
 	L.RawSetInt(st, keyTimerTable, L.NewTable())
 	stateSet(L, st)
+}
+
+func stateClean(L *lua.LState) {
+	_, connIdx := stateConnTable(L)
+
+	st := stateGet(L)
+	L.RawSetInt(st, keyConnTable, newConnTbl(L))
+	L.RawSetInt(st, keySubsTable, newSubsTbl(L))
+
+	for nc := range connIdx {
+		nc.SetClosedHandler(nil)
+		nc.SetDisconnectErrHandler(nil)
+		nc.SetDiscoveredServersHandler(nil)
+		nc.SetErrorHandler(nil)
+		nc.SetReconnectHandler(nil)
+		nc.Close()
+	}
 }
 
 func stateUncheckedGet(L *lua.LState) *lua.LTable {
