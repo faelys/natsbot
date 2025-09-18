@@ -105,7 +105,14 @@ func Loop(cb NatsBot, mainScript string, capacity int) {
 			toClean = make(map[*nats.Subscription]bool)
 		}
 
+		if stateReloadRequested(L) {
+			L = reload(cb, L, mainScript)
+			runTimers(L, timer)
+			stateRequestReload(L, lua.LNil)
+		}
+
 		if tableWithIndexIsEmpty(stateSubsTable(L)) && tableIsEmpty(stateTimerTable(L)) {
+			log.Println("No callback remaining")
 			break
 		}
 	}
@@ -179,6 +186,28 @@ func processMsg(L *lua.LState, msg *nats.Msg) {
 	}
 }
 
+func reload(cb NatsBot, oldL *lua.LState, mainScript string) *lua.LState {
+	log.Println("Reloading", mainScript)
+
+	newL := lua.NewState()
+	cb.Setup(newL)
+	registerConnType(newL)
+	registerTimerType(newL)
+	stateReloadBegin(oldL, newL)
+
+	if err := newL.DoFile(mainScript); err != nil {
+		log.Println("Reload failed:", err)
+		stateReloadAbort(oldL, newL)
+		newL.Close()
+		return oldL
+	} else {
+		stateReloadEnd(oldL, newL)
+		oldL.Close()
+		log.Println("Reload successful")
+		return newL
+	}
+}
+
 /********** State Object in the Lua Interpreter **********/
 
 const luaStateName = "_natsbot"
@@ -190,6 +219,7 @@ const (
 	keyConnTable
 	keySubsTable
 	keyTimerTable
+	keyReloadRequest
 )
 
 func registerState(L *lua.LState, evtChan chan *internalEvent, msgChan chan *nats.Msg) {
@@ -201,6 +231,23 @@ func registerState(L *lua.LState, evtChan chan *internalEvent, msgChan chan *nat
 	L.RawSetInt(st, keySubsTable, newSubsTbl(L))
 	L.RawSetInt(st, keyTimerTable, L.NewTable())
 	stateSet(L, st)
+
+	L.SetGlobal("reload", L.NewFunction(requestReload))
+}
+
+func stateReloadBegin(oldL, newL *lua.LState) {
+	evtChan := stateEvtChan(oldL)
+	msgChan := stateMsgChan(oldL)
+
+	registerState(newL, evtChan, msgChan)
+}
+
+func stateReloadAbort(oldL, newL *lua.LState) {
+	stateClean(newL)
+}
+
+func stateReloadEnd(oldL, newL *lua.LState) {
+	stateClean(oldL)
 }
 
 func stateClean(L *lua.LState) {
@@ -276,6 +323,19 @@ func stateSubsTable(L *lua.LState) (*lua.LTable, subsMap) {
 
 func stateTimerTable(L *lua.LState) *lua.LTable {
 	return stateValue(L, keyTimerTable).(*lua.LTable)
+}
+
+func stateReloadRequested(L *lua.LState) bool {
+	return lua.LVAsBool(stateValue(L, keyReloadRequest))
+}
+
+func stateRequestReload(L *lua.LState, v lua.LValue) {
+	L.RawSetInt(stateGet(L), keyReloadRequest, v)
+}
+
+func requestReload(L *lua.LState) int {
+	stateRequestReload(L, lua.LTrue)
+	return 0
 }
 
 /********** NATS Connection Configuration **********/
