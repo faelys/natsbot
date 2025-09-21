@@ -117,7 +117,7 @@ func Loop(cb NatsBot, mainScript string, capacity int) {
 		}
 	}
 
-	stateClean(L)
+	stateClean(L, nil)
 	log.Println("natsbot finished")
 }
 
@@ -220,6 +220,7 @@ const (
 	keySubsTable
 	keyTimerTable
 	keyReloadRequest
+	keyOldCfgMap
 )
 
 func registerState(L *lua.LState, evtChan chan *internalEvent, msgChan chan *nats.Msg) {
@@ -238,26 +239,38 @@ func registerState(L *lua.LState, evtChan chan *internalEvent, msgChan chan *nat
 func stateReloadBegin(oldL, newL *lua.LState) {
 	evtChan := stateEvtChan(oldL)
 	msgChan := stateMsgChan(oldL)
+	cfgMap := stateCfgMap(oldL)
 
 	registerState(newL, evtChan, msgChan)
+	newL.RawSetInt(stateGet(newL), keyOldCfgMap, newUserData(newL, cfgMap))
 }
 
 func stateReloadAbort(oldL, newL *lua.LState) {
-	stateClean(newL)
+	stateClean(newL, oldL)
 }
 
 func stateReloadEnd(oldL, newL *lua.LState) {
-	stateClean(oldL)
+	stateClean(oldL, newL)
+	newL.RawSetInt(stateGet(newL), keyOldCfgMap, lua.LNil)
 }
 
-func stateClean(L *lua.LState) {
+func stateClean(L, keptL *lua.LState) {
 	_, connIdx := stateConnTable(L)
 
 	st := stateGet(L)
 	L.RawSetInt(st, keyConnTable, newConnTbl(L))
 	L.RawSetInt(st, keySubsTable, newSubsTbl(L))
 
+	var keptConn connMap
+	if keptL != nil {
+		_, keptConn = stateConnTable(keptL)
+	}
+
 	for nc := range connIdx {
+		if _, found := keptConn[nc]; found {
+			continue
+		}
+
 		nc.SetClosedHandler(nil)
 		nc.SetDisconnectErrHandler(nil)
 		nc.SetDiscoveredServersHandler(nil)
@@ -331,6 +344,15 @@ func stateReloadRequested(L *lua.LState) bool {
 
 func stateRequestReload(L *lua.LState, v lua.LValue) {
 	L.RawSetInt(stateGet(L), keyReloadRequest, v)
+}
+
+func stateOldCfgMap(L *lua.LState) natsConfigMap {
+	v := stateValue(L, keyOldCfgMap)
+	if v == lua.LNil {
+		return nil
+	} else {
+		return v.(*lua.LUserData).Value.(natsConfigMap)
+	}
 }
 
 func requestReload(L *lua.LState) int {
@@ -526,6 +548,14 @@ func natsConnect(L *lua.LState) int {
 			return 1
 		} else {
 			panic("Inconsistent connection table")
+		}
+	}
+
+	if oldCfgMap := stateOldCfgMap(L); oldCfgMap != nil {
+		if nc, found := oldCfgMap[cfg]; found {
+			cfgMap[cfg] = nc
+			L.Push(wrapConn(L, nc, cbmap))
+			return 1
 		}
 	}
 
