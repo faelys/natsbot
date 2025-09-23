@@ -98,6 +98,7 @@ func Loop(cb NatsBot, mainScript string, capacity int) {
 					tbl, idx := stateSubsTable(L)
 					L.RawSetInt(tbl, idx[s], lua.LNil)
 					delete(idx, s)
+					deleteFromSubsCfgMap(L, s)
 				} else {
 					log.Printf("Subscription %q is still valid", s.Subject)
 				}
@@ -217,6 +218,7 @@ const (
 	keyMsgChan
 	keyCfgMap
 	keyConnTable
+	keySubsCfgMap
 	keySubsTable
 	keyTimerTable
 	keyReloadRequest
@@ -229,6 +231,7 @@ func registerState(L *lua.LState, evtChan chan *internalEvent, msgChan chan *nat
 	L.RawSetInt(st, keyMsgChan, newUserData(L, msgChan))
 	L.RawSetInt(st, keyCfgMap, newUserData(L, make(natsConfigMap)))
 	L.RawSetInt(st, keyConnTable, newConnTbl(L))
+	L.RawSetInt(st, keySubsCfgMap, newUserData(L, make(subsCfgMap)))
 	L.RawSetInt(st, keySubsTable, newSubsTbl(L))
 	L.RawSetInt(st, keyTimerTable, L.NewTable())
 	stateSet(L, st)
@@ -328,6 +331,11 @@ func stateConnTable(L *lua.LState) (*lua.LTable, connMap) {
 	return tbl, idx
 }
 
+func stateSubsCfgMap(L *lua.LState) subsCfgMap {
+	ud := stateValue(L, keySubsCfgMap)
+	return ud.(*lua.LUserData).Value.(subsCfgMap)
+}
+
 func stateSubsTable(L *lua.LState) (*lua.LTable, subsMap) {
 	tbl := stateValue(L, keySubsTable).(*lua.LTable)
 	idx := L.RawGetInt(tbl, keyIndex).(*lua.LUserData).Value.(subsMap)
@@ -358,6 +366,40 @@ func stateOldCfgMap(L *lua.LState) natsConfigMap {
 func requestReload(L *lua.LState) int {
 	stateRequestReload(L, lua.LTrue)
 	return 0
+}
+
+func addToSubsCfgMap(L *lua.LState, nc *nats.Conn, s *nats.Subscription) {
+	cfgMap := stateSubsCfgMap(L)
+	subsKey := subsCfg{subject: s.Subject, queue: s.Queue}
+	cmap, found := cfgMap[subsKey]
+	if !found {
+		cmap = make(map[*nats.Conn][]*nats.Subscription)
+		cfgMap[subsKey] = cmap
+	}
+	cmap[nc] = append(cmap[nc], s)
+}
+
+func deleteFromSubsCfgMap(L *lua.LState, s *nats.Subscription) {
+	wholeMap := stateSubsCfgMap(L)
+	subsKey := subsCfg{subject: s.Subject, queue: s.Queue}
+	cMap := wholeMap[subsKey]
+	for nc, subsArray := range cMap {
+		n := 0
+		for _, ns := range subsArray {
+			if ns != s {
+				subsArray[n] = s
+				n++
+			}
+		}
+		if n > 0 {
+			cMap[nc] = subsArray[:n]
+		} else {
+			delete(cMap, nc)
+		}
+	}
+	if len(cMap) == 0 {
+		delete(wholeMap, subsKey)
+	}
 }
 
 /********** NATS Connection Configuration **********/
@@ -703,6 +745,13 @@ type natsSubs struct {
 
 type subsMap map[*nats.Subscription]int
 
+type subsCfg struct {
+	subject string
+	queue   string
+}
+
+type subsCfgMap map[subsCfg]map[*nats.Conn][]*nats.Subscription
+
 func newSubsTbl(L *lua.LState) lua.LValue {
 	subsTbl := L.NewTable()
 	L.RawSetInt(subsTbl, keyIndex, newUserData(L, make(subsMap)))
@@ -716,6 +765,8 @@ func wrapSubs(L *lua.LState, fn lua.LValue, ns *nats.Subscription, nc *nats.Conn
 
 	subsIdx[ns] = id
 	L.RawSetInt(tbl, id, luaSub)
+
+	addToSubsCfgMap(L, nc, ns)
 
 	index := L.NewTable()
 	L.SetField(index, "callback", fn)
