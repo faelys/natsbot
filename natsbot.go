@@ -457,6 +457,7 @@ type natsConfig struct {
 	user     string
 	password string
 	token    string
+	retry    bool
 }
 
 type natsConfigMap map[natsConfig]*nats.Conn
@@ -556,6 +557,9 @@ func toConfig(L *lua.LState, lv lua.LValue) (*natsConfig, natsCbMap, error) {
 				errStr = append(errStr, fmt.Sprintf("bad value for key %q: %q", skey, lua.LVAsString(value)))
 			}
 
+		case "retry":
+			result.retry = lua.LVAsBool(value)
+
 		default:
 			errStr = append(errStr, fmt.Sprintf("Unknown key %q", skey))
 		}
@@ -575,6 +579,7 @@ func newConn(evtChan chan *internalEvent, cfg *natsConfig) (*nats.Conn, error) {
 		nats.ReconnectErrHandler(newConnErrHandler(evtChan, "reconnect_error")),
 		nats.ClosedHandler(newConnHandler(evtChan, "closed")),
 		nats.ErrorHandler(newErrHandler(evtChan, "error")),
+		nats.RetryOnFailedConnect(cfg.retry),
 	}
 
 	if cfg.name != "" {
